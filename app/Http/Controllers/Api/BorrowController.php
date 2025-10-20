@@ -23,9 +23,6 @@ class BorrowController extends Controller
         $this->middleware('auth:api');
     }
 
-    /**
-     * Send notification to a user.
-     */
     private function sendNotification(int $userId, string $title, string $message, string $type, ?int $borrowId = null): void
     {
         try {
@@ -43,9 +40,6 @@ class BorrowController extends Controller
         }
     }
 
-    /**
-     * Notify all admins.
-     */
     private function notifyAllAdmins(string $title, string $message, string $type, ?int $borrowId = null): void
     {
         $admins = Admin::pluck('id')->toArray();
@@ -54,9 +48,6 @@ class BorrowController extends Controller
         }
     }
 
-    /**
-     * Validate unit availability and compatibility.
-     */
     private function isUnitValid(UnitBarang $unit, Borrow $borrow, int $unitId): bool
     {
         if ($unit->barang_id !== $borrow->barang_id || trim(strtolower($unit->status)) !== 'tersedia') {
@@ -72,19 +63,32 @@ class BorrowController extends Controller
         return true;
     }
 
-    /**
-     * Store a new borrow request.
-     */
     public function store(Request $request): JsonResponse
     {
-        $data = $request->validate([
+        $barang = Barang::find($request->input('barang_id'));
+        if (!$barang) {
+            Log::warning("Peminjaman gagal: Barang ID {$request->input('barang_id')} tidak ditemukan");
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Barang tidak ditemukan.',
+            ], 404);
+        }
+
+        $isConsumable = strtolower($barang->tipe) === 'consumable';
+
+        $validationRules = [
             'barang_id' => ['required', 'exists:barangs,id'],
             'jumlah' => ['required', 'integer', 'min:1'],
             'tanggal_pinjam' => ['required', 'date_format:Y-m-d H:i:s', 'after_or_equal:now'],
-            'tanggal_kembali' => ['required', 'date_format:Y-m-d H:i:s', 'after_or_equal:tanggal_pinjam'],
-            'lokasi' => ['required', 'string', 'max:255'],
             'deskripsi' => ['nullable', 'string', 'max:1000'],
-        ]);
+        ];
+
+        if (!$isConsumable) {
+            $validationRules['tanggal_kembali'] = ['required', 'date_format:Y-m-d H:i:s', 'after_or_equal:tanggal_pinjam'];
+            $validationRules['lokasi'] = ['required', 'string', 'max:255'];
+        }
+
+        $data = $request->validate($validationRules);
 
         $user = auth('api')->user();
         if (!$user) {
@@ -95,27 +99,27 @@ class BorrowController extends Controller
             ], 401);
         }
 
-        $pinjam = Carbon::parse($data['tanggal_pinjam']);
-        $kembali = Carbon::parse($data['tanggal_kembali']);
-        if ($pinjam->isSameDay($kembali) && ($kembali->hour > 18 || ($kembali->hour == 18 && $kembali->minute > 0))) {
-            Log::warning("Peminjaman gagal: Pengembalian di hari yang sama tidak boleh setelah pukul 18:00");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Pengembalian di hari yang sama harus sebelum atau pada pukul 18:00.',
-            ], 400);
+        if (!$isConsumable) {
+            $pinjam = Carbon::parse($data['tanggal_pinjam']);
+            $kembali = Carbon::parse($data['tanggal_kembali']);
+            if ($pinjam->isSameDay($kembali) && ($kembali->hour > 18 || ($kembali->hour == 18 && $kembali->minute > 0))) {
+                Log::warning("Peminjaman gagal: Pengembalian di hari yang sama tidak boleh setelah pukul 18:00");
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Pengembalian di hari yang sama harus sebelum atau pada pukul 18:00.',
+                ], 400);
+            }
+
+            if ($kembali->diffInDays($pinjam) > 7) {
+                Log::warning("Peminjaman gagal: Durasi peminjaman melebihi 7 hari");
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Durasi peminjaman tidak boleh lebih dari 7 hari.',
+                ], 400);
+            }
         }
 
-        if ($kembali->diffInDays($pinjam) > 7) {
-            Log::warning("Peminjaman gagal: Durasi peminjaman melebihi 7 hari");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Durasi peminjaman tidak boleh lebih dari 7 hari.',
-            ], 400);
-        }
-
-        /** @var Barang $barang */
-        $barang = Barang::find($data['barang_id']);
-        if (!$barang || $barang->stok < $data['jumlah']) {
+        if ($barang->stok < $data['jumlah']) {
             Log::warning("Peminjaman gagal: Stok barang ID {$data['barang_id']} tidak mencukupi untuk {$data['jumlah']} unit");
             return response()->json([
                 'status' => 'error',
@@ -141,8 +145,8 @@ class BorrowController extends Controller
                 'barang_id' => $data['barang_id'],
                 'jumlah_unit' => $data['jumlah'],
                 'tanggal_pinjam' => $data['tanggal_pinjam'],
-                'tanggal_kembali' => $data['tanggal_kembali'],
-                'lokasi' => $data['lokasi'],
+                'tanggal_kembali' => $isConsumable ? null : $data['tanggal_kembali'],
+                'lokasi' => $isConsumable ? null : $data['lokasi'],
                 'deskripsi' => $data['deskripsi'] ?? null,
                 'status' => 'pending',
             ];
@@ -179,12 +183,8 @@ class BorrowController extends Controller
         }
     }
 
-    /**
-     * Update a borrow request.
-     */
     public function update(Request $request, int $id): JsonResponse
     {
-        /** @var Borrow|null $borrow */
         $borrow = Borrow::with(['user', 'barang'])->find($id);
         if (!$borrow || !$borrow->barang || !$borrow->user) {
             Log::error("Borrow ID {$id} tidak ditemukan atau relasi user/barang invalid");
@@ -211,34 +211,42 @@ class BorrowController extends Controller
             ], 403);
         }
 
-        $data = $request->validate([
+        $isConsumable = strtolower($borrow->barang->tipe) === 'consumable';
+
+        $validationRules = [
             'barang_id' => ['required', 'exists:barangs,id'],
             'jumlah' => ['required', 'integer', 'min:1'],
             'tanggal_pinjam' => ['required', 'date_format:Y-m-d H:i:s', 'after_or_equal:now'],
-            'tanggal_kembali' => ['required', 'date_format:Y-m-d H:i:s', 'after_or_equal:tanggal_pinjam'],
-            'lokasi' => ['required', 'string', 'max:255'],
             'deskripsi' => ['nullable', 'string', 'max:1000'],
-        ]);
+        ];
 
-        $pinjam = Carbon::parse($data['tanggal_pinjam']);
-        $kembali = Carbon::parse($data['tanggal_kembali']);
-        if ($pinjam->isSameDay($kembali) && ($kembali->hour > 18 || ($kembali->hour == 18 && $kembali->minute > 0))) {
-            Log::warning("Update peminjaman gagal: Pengembalian di hari yang sama tidak boleh setelah pukul 18:00");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Pengembalian di hari yang sama harus sebelum atau pada pukul 18:00.',
-            ], 400);
+        if (!$isConsumable) {
+            $validationRules['tanggal_kembali'] = ['required', 'date_format:Y-m-d H:i:s', 'after_or_equal:tanggal_pinjam'];
+            $validationRules['lokasi'] = ['required', 'string', 'max:255'];
         }
 
-        if ($kembali->diffInDays($pinjam) > 7) {
-            Log::warning("Update peminjaman gagal: Durasi peminjaman melebihi 7 hari");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Durasi peminjaman tidak boleh lebih dari 7 hari.',
-            ], 400);
+        $data = $request->validate($validationRules);
+
+        if (!$isConsumable) {
+            $pinjam = Carbon::parse($data['tanggal_pinjam']);
+            $kembali = Carbon::parse($data['tanggal_kembali']);
+            if ($pinjam->isSameDay($kembali) && ($kembali->hour > 18 || ($kembali->hour == 18 && $kembali->minute > 0))) {
+                Log::warning("Update peminjaman gagal: Pengembalian di hari yang sama tidak boleh setelah pukul 18:00");
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Pengembalian di hari yang sama harus sebelum atau pada pukul 18:00.',
+                ], 400);
+            }
+
+            if ($kembali->diffInDays($pinjam) > 7) {
+                Log::warning("Update peminjaman gagal: Durasi peminjaman melebihi 7 hari");
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Durasi peminjaman tidak boleh lebih dari 7 hari.',
+                ], 400);
+            }
         }
 
-        /** @var Barang $barang */
         $barang = Barang::find($data['barang_id']);
         if (!$barang || $barang->stok < $data['jumlah']) {
             Log::warning("Update peminjaman gagal: Stok barang ID {$data['barang_id']} tidak mencukupi untuk {$data['jumlah']} unit");
@@ -266,8 +274,8 @@ class BorrowController extends Controller
                 'barang_id' => $data['barang_id'],
                 'jumlah_unit' => $data['jumlah'],
                 'tanggal_pinjam' => $data['tanggal_pinjam'],
-                'tanggal_kembali' => $data['tanggal_kembali'],
-                'lokasi' => $data['lokasi'],
+                'tanggal_kembali' => $isConsumable ? null : $data['tanggal_kembali'],
+                'lokasi' => $isConsumable ? null : $data['lokasi'],
                 'deskripsi' => $data['deskripsi'] ?? null,
             ];
             $borrow->update($borrowData);
@@ -303,9 +311,110 @@ class BorrowController extends Controller
         }
     }
 
-    /**
-     * Display a listing of borrows.
-     */
+    public function assignUnit(Request $request, int $id): JsonResponse
+    {
+        $data = $request->validate([
+            'unit_ids' => ['required', 'array', 'min:1'],
+            'unit_ids.*' => ['exists:unit_barangs,id'],
+        ]);
+
+        $borrow = Borrow::with(['user', 'barang'])->find($id);
+        if (!$borrow || !$borrow->barang || !$borrow->user) {
+            Log::error("Borrow ID {$id} tidak ditemukan atau relasi user/barang invalid");
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Data peminjaman, user, atau barang tidak valid',
+            ], 404);
+        }
+
+        if ($borrow->status !== 'pending') {
+            Log::warning("Assign unit gagal: Peminjaman ID {$id} tidak dalam status pending");
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Peminjaman harus berstatus pending',
+            ], 400);
+        }
+
+        if (count($data['unit_ids']) !== $borrow->jumlah_unit) {
+            Log::warning("Assign unit gagal: Jumlah unit dipilih (" . count($data['unit_ids']) . ") tidak sesuai jumlah_unit ({$borrow->jumlah_unit})");
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Jumlah unit yang dipilih harus sesuai dengan jumlah yang diminta',
+            ], 400);
+        }
+
+        DB::beginTransaction();
+        try {
+            $isConsumable = strtolower($borrow->barang->tipe) === 'consumable';
+
+            if ($isConsumable) {
+                // Untuk barang consumable, kurangi stok langsung
+                $barang = Barang::find($borrow->barang_id);
+                $newStok = $barang->stok - $borrow->jumlah_unit;
+                if ($newStok < 0) {
+                    throw new \Exception('Stok tidak cukup untuk barang sekali pakai.');
+                }
+                $barang->update(['stok' => $newStok]);
+            } else {
+                // Panggil stored procedure untuk aksi 'assign' untuk barang returnable
+                DB::statement('CALL manage_barang_stock(?, ?)', [$borrow->id, 'assign']);
+            }
+
+            foreach ($data['unit_ids'] as $unitId) {
+                $unit = UnitBarang::lockForUpdate()->find($unitId);
+                if (!$this->isUnitValid($unit, $borrow, $unitId)) {
+                    DB::rollBack();
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => "Unit ID {$unitId} tidak sesuai atau sudah digunakan",
+                    ], 400);
+                }
+
+                DetailBorrow::create([
+                    'borrow_id' => $borrow->id,
+                    'unit_barang_id' => $unitId,
+                    'barang_id' => $borrow->barang_id,
+                    'jumlah' => 1,
+                    'status' => 'active',
+                ]);
+
+                $unit->update(['status' => $isConsumable ? 'used' : 'dipinjam']);
+            }
+
+            $borrow->update(['status' => 'assigned', 'tanggal_approve' => now()]);
+
+            $this->sendNotification(
+                $borrow->user_id,
+                'Peminjaman Disetujui',
+                "Peminjaman {$borrow->barang->nama} telah disetujui oleh admin.",
+                'info',
+                $borrow->id
+            );
+            $this->notifyAllAdmins(
+                'Peminjaman Disetujui',
+                "Peminjaman {$borrow->barang->nama} untuk user {$borrow->user->name} telah disetujui.",
+                'info',
+                $borrow->id
+            );
+
+            DB::commit();
+            Log::info("Unit berhasil dialokasikan untuk peminjaman ID {$id}, Jumlah unit: " . count($data['unit_ids']));
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Unit berhasil di-assign!',
+                'data' => $borrow->fresh(['user', 'barang', 'details.unitBarang']),
+            ], 200);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Gagal mengalokasikan unit untuk peminjaman ID {$id}: {$e->getMessage()}");
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Gagal meng-assign unit: ' . ($e->getCode() == '45000' ? $e->getMessage() : 'Terjadi kesalahan server'),
+            ], $e->getCode() == '45000' ? 400 : 500);
+        }
+    }
+
+    // Metode lain (index, assign, destroy, reject, cancelExpired, showNotifications) tetap sama seperti kode asli
     public function index(Request $request): JsonResponse
     {
         $query = Borrow::with(['user', 'barang', 'details.unitBarang'])
@@ -329,12 +438,8 @@ class BorrowController extends Controller
         ], 200);
     }
 
-    /**
-     * Display units available for assignment.
-     */
     public function assign(int $id): JsonResponse
     {
-        /** @var Borrow|null $borrow */
         $borrow = Borrow::with('barang')->find($id);
         if (!$borrow || !$borrow->barang) {
             Log::error("Borrow ID {$id} tidak ditemukan atau barang invalid");
@@ -374,111 +479,8 @@ class BorrowController extends Controller
         ], 200);
     }
 
-    /**
-     * Assign units to a borrow request.
-     */
-    public function assignUnit(Request $request, int $id): JsonResponse
-    {
-        $data = $request->validate([
-            'unit_ids' => ['required', 'array', 'min:1'],
-            'unit_ids.*' => ['exists:unit_barangs,id'],
-        ]);
-
-        /** @var Borrow|null $borrow */
-        $borrow = Borrow::with(['user', 'barang'])->find($id);
-        if (!$borrow || !$borrow->barang || !$borrow->user) {
-            Log::error("Borrow ID {$id} tidak ditemukan atau relasi user/barang invalid");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Data peminjaman, user, atau barang tidak valid',
-            ], 404);
-        }
-
-        if ($borrow->status !== 'pending') {
-            Log::warning("Assign unit gagal: Peminjaman ID {$id} tidak dalam status pending");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Peminjaman harus berstatus pending',
-            ], 400);
-        }
-
-        if (count($data['unit_ids']) !== $borrow->jumlah_unit) {
-            Log::warning("Assign unit gagal: Jumlah unit dipilih (" . count($data['unit_ids']) . ") tidak sesuai jumlah_unit ({$borrow->jumlah_unit})");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Jumlah unit yang dipilih harus sesuai dengan jumlah yang diminta',
-            ], 400);
-        }
-
-        DB::beginTransaction();
-        try {
-            // Panggil stored procedure untuk aksi 'assign'
-            DB::statement('CALL manage_barang_stock(?, ?)', [$borrow->id, 'assign']);
-
-            foreach ($data['unit_ids'] as $unitId) {
-                /** @var UnitBarang $unit */
-                $unit = UnitBarang::lockForUpdate()->find($unitId);
-
-                if (!$this->isUnitValid($unit, $borrow, $unitId)) {
-                    DB::rollBack();
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => "Unit ID {$unitId} tidak sesuai atau sudah digunakan",
-                    ], 400);
-                }
-
-                DetailBorrow::create([
-                    'borrow_id' => $borrow->id,
-                    'unit_barang_id' => $unitId,
-                    'barang_id' => $borrow->barang_id,
-                    'jumlah' => 1,
-                    'status' => 'active',
-                ]);
-
-                $unit->update(['status' => 'dipinjam']);
-            }
-
-            // Update status peminjaman
-            $borrow->update(['status' => 'assigned', 'tanggal_approve' => now()]);
-
-            // Kirim notifikasi
-            $this->sendNotification(
-                $borrow->user_id,
-                'Peminjaman Disetujui',
-                "Peminjaman {$borrow->barang->nama} telah disetujui oleh admin.",
-                'info',
-                $borrow->id
-            );
-            $this->notifyAllAdmins(
-                'Peminjaman Disetujui',
-                "Peminjaman {$borrow->barang->nama} untuk user {$borrow->user->name} telah disetujui.",
-                'info',
-                $borrow->id
-            );
-
-            DB::commit();
-            Log::info("Unit berhasil dialokasikan untuk peminjaman ID {$id}, Jumlah unit: " . count($data['unit_ids']));
-            return response()->json([
-                'status' => 'success',
-                'message' => 'Unit berhasil di-assign!',
-                'data' => $borrow->fresh(['user', 'barang', 'details.unitBarang']),
-            ], 200);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error("Gagal mengalokasikan unit untuk peminjaman ID {$id}: {$e->getMessage()}");
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Gagal meng-assign unit: ' . ($e->getCode() == '45000' ? $e->getMessage() : 'Terjadi kesalahan server'),
-            ], $e->getCode() == '45000' ? 400 : 500);
-        }
-    }
-
-    /**
-     * Remove a borrow request.
-     */
     public function destroy(int $id): JsonResponse
     {
-        /** @var Borrow|null $borrow */
         $borrow = Borrow::with(['user', 'barang'])->find($id);
         if (!$borrow || !$borrow->barang || !$borrow->user) {
             Log::error("Borrow ID {$id} tidak ditemukan atau relasi user/barang invalid");
@@ -529,12 +531,8 @@ class BorrowController extends Controller
         }
     }
 
-    /**
-     * Reject a borrow request.
-     */
     public function reject(Request $request, int $id): JsonResponse
     {
-        /** @var Borrow|null $borrow */
         $borrow = Borrow::with(['user', 'barang'])->find($id);
         if (!$borrow || !$borrow->barang || !$borrow->user) {
             Log::error("Borrow ID {$id} tidak ditemukan atau relasi user/barang invalid");
@@ -594,12 +592,8 @@ class BorrowController extends Controller
         }
     }
 
-    /**
-     * Cancel an expired borrow request.
-     */
     public function cancelExpired(Request $request, int $id): JsonResponse
     {
-        /** @var Borrow|null $borrow */
         $borrow = Borrow::with(['user', 'barang'])->find($id);
         if (!$borrow || !$borrow->barang || !$borrow->user) {
             Log::error("Borrow ID {$id} tidak ditemukan atau relasi user/barang invalid");
@@ -668,9 +662,6 @@ class BorrowController extends Controller
         }
     }
 
-    /**
-     * Display notifications.
-     */
     public function showNotifications(): JsonResponse
     {
         $notifications = Notification::with(['user', 'borrow.barang'])

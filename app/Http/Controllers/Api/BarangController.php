@@ -13,18 +13,16 @@ class BarangController extends Controller
 {
     public function __construct()
     {
-        $this->middleware('auth:sanctum'); // Pastikan hanya yang login yang bisa akses
-        $this->middleware('admin')->only(['store', 'update', 'destroy']); // Hanya admin yang bisa akses store, update, destroy
+        $this->middleware('auth:sanctum');
+        $this->middleware('admin')->only(['store', 'update', 'destroy']);
     }
 
-    // Menampilkan semua barang
     public function index()
     {
         $barang = Barang::with('kategori')->get();
         return response()->json($barang);
     }
 
-    // Menambahkan barang baru (Hanya Admin)
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -61,14 +59,12 @@ class BarangController extends Controller
         ], 201);
     }
 
-    // Menampilkan barang berdasarkan ID
     public function show($id)
     {
         $barang = Barang::with('kategori')->findOrFail($id);
         return response()->json($barang);
     }
 
-    // Update barang (Hanya Admin)
     public function update(Request $request, Barang $barang)
     {
         $validated = $request->validate([
@@ -79,6 +75,10 @@ class BarangController extends Controller
             'foto' => 'nullable|image|max:2048',
         ]);
 
+        $stokLama = $barang->stok;
+        $stokBaru = $validated['stok'];
+        $selisih = $stokBaru - $stokLama;
+
         if ($request->hasFile('foto')) {
             if ($barang->foto) {
                 Storage::disk('public')->delete($barang->foto);
@@ -88,13 +88,30 @@ class BarangController extends Controller
 
         $barang->update($validated);
 
+        if ($selisih > 0) {
+            $kategori = KategoriBarang::find($validated['kategori_id']);
+            $prefix = strtoupper(substr($kategori->nama ?? 'XXX', 0, 3));
+            $lastUnit = UnitBarang::where('barang_id', $barang->id)->orderBy('kode_barang', 'desc')->first();
+            $nextNumber = $lastUnit ? (int)substr($lastUnit->kode_barang, -3) + 1 : $stokLama + 1;
+
+            for ($i = 0; $i < $selisih; $i++) {
+                UnitBarang::create([
+                    'barang_id' => $barang->id,
+                    'kode_barang' => $prefix . '-' . str_pad($nextNumber + $i, 3, '0', STR_PAD_LEFT),
+                    'kondisi' => 'Baik',
+                    'status' => 'Tersedia',
+                    'lokasi' => 'Belum ditentukan',
+                    'stok' => 1
+                ]);
+            }
+        }
+
         return response()->json([
             'message' => 'Barang berhasil diperbarui!',
             'data' => $barang
         ]);
     }
 
-    // Hapus barang (Hanya Admin)
     public function destroy(Barang $barang)
     {
         if ($barang->foto) {

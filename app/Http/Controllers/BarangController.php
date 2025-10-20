@@ -113,6 +113,48 @@ class BarangController extends Controller
         return redirect()->route('barang.index')->with('success', 'Barang berhasil diperbarui.');
     }
 
+    public function tambahStok($id)
+{
+    $barang = Barang::findOrFail($id);
+    return view('barang.tambah-stok', compact('barang'));
+}
+
+public function storeTambahStok(Request $request, $id)
+{
+    $validated = $request->validate([
+        'jumlah_tambahan' => 'required|integer|min:1',
+    ]);
+
+    $barang = Barang::findOrFail($id);
+    $jumlahBaru = $barang->stok + $validated['jumlah_tambahan'];
+    
+    // Update stok total
+    $barang->update(['stok' => $jumlahBaru]);
+    
+    // Ambil prefix dari unit terakhir
+    $lastUnit = UnitBarang::where('barang_id', $barang->id)->orderBy('id', 'desc')->first();
+    $nextNumber = $lastUnit ? (int)substr($lastUnit->kode_barang, -3) + 1 : 1;
+    $prefix = substr($lastUnit->kode_barang ?? 'XXX', 0, 3);
+
+    // Batch insert unit baru
+    $units = [];
+    for ($i = 0; $i < $validated['jumlah_tambahan']; $i++) {
+        $units[] = [
+            'barang_id' => $barang->id,
+            'kode_barang' => $prefix . '-' . str_pad($nextNumber + $i, 3, '0', STR_PAD_LEFT),
+            'kondisi' => 'Baik',
+            'status' => 'Tersedia',
+            'lokasi' => $lastUnit->lokasi ?? 'Belum ditentukan',
+            'stok' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+    }
+    UnitBarang::insert($units);
+
+    return redirect()->route('items.index', $barang->id)->with('success', "Berhasil tambah {$validated['jumlah_tambahan']} unit stok!");
+} 
+
     public function exportPdf()
     {
         $data = Barang::with('kategori')->get();

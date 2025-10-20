@@ -156,7 +156,8 @@
         <h2 class="section-title">🧾 Daftar Unit Barang</h2>
         <div style="margin-bottom: 20px;">
             <a href="{{ route('admin.barang.index') }}" class="btn-back">← Kembali ke Daftar Barang</a>
-            <a href="{{ route('admin.barang.units.create', $barang->id) }}" class="btn-add">+ Tambah Unit Barang</a>
+            <a href="{{ route('admin.barang.tambahStok', $barang->id) }}" class="btn-add">+ Tambah Stok</a>
+
         </div>
         <table>
             <thead>

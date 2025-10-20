@@ -13,18 +13,21 @@ use App\Http\Controllers\KategoriBarangController;
 
 Route::get('/', fn() => view('landing'));
 
-// Route untuk Admin
+// ====================== ADMIN ROUTES ======================
 Route::prefix('admin')->name('admin.')->group(function () {
+    // Auth
     Route::get('login', [AdminAuthController::class, 'loginPage'])->name('login');
     Route::post('login', [AdminAuthController::class, 'login']);
     Route::post('logout', [AdminAuthController::class, 'logout'])->name('logout');
 
     Route::middleware('auth:admin')->group(function () {
+        // Dashboard & Profil
         Route::get('dashboard', [AdminDashboardController::class, 'dashboard'])->name('dashboard');
         Route::get('profil', [AdminAuthController::class, 'profil'])->name('profil');
         Route::get('profil/edit', [AdminAuthController::class, 'editProfil'])->name('profil.edit');
         Route::put('profil/update', [AdminAuthController::class, 'updateProfil'])->name('profil.update');
 
+        // ====================== MANAJEMEN USER ======================
         Route::prefix('manajemen-user')->name('manajemen-user.')->group(function () {
             Route::get('/', [UserController::class, 'index'])->name('index');
             Route::get('create', [UserController::class, 'create'])->name('create');
@@ -34,7 +37,13 @@ Route::prefix('admin')->name('admin.')->group(function () {
             Route::post('{id}/destroy', [UserController::class, 'destroy'])->name('destroy');
         });
 
+        // ====================== BARANG ======================
         Route::prefix('barang')->name('barang.')->group(function () {
+            // Tambah stok
+            Route::get('{id}/tambah-stok', [BarangController::class, 'tambahStok'])->name('tambahStok');
+            Route::post('{id}/tambah-stok', [BarangController::class, 'storeTambahStok'])->name('storeTambahStok');
+
+            // CRUD barang
             Route::get('/', [BarangController::class, 'index'])->name('index');
             Route::get('create', [BarangController::class, 'create'])->name('create');
             Route::post('store', [BarangController::class, 'store'])->name('store');
@@ -44,6 +53,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
             Route::get('export/pdf', [BarangController::class, 'exportPdf'])->name('export.pdf');
             Route::get('export/excel', [BarangController::class, 'exportExcel'])->name('export.excel');
 
+            // Unit barang
             Route::prefix('{barang}/units')->name('units.')->group(function () {
                 Route::get('/', [ItemController::class, 'index'])->name('index');
                 Route::get('create', [ItemController::class, 'create'])->name('create');
@@ -54,6 +64,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
             });
         });
 
+        // ====================== BORROWS ======================
         Route::prefix('borrows')->name('borrows.')->group(function () {
             Route::get('/', [BorrowController::class, 'index'])->name('index');
             Route::get('create', [BorrowController::class, 'create'])->name('create');
@@ -67,19 +78,26 @@ Route::prefix('admin')->name('admin.')->group(function () {
             Route::get('notifications', [BorrowController::class, 'showNotifications'])->name('notifications');
         });
 
+        // ====================== RETURN ======================
         Route::prefix('return')->name('return.')->group(function () {
             Route::get('/', [ReturnController::class, 'index'])->name('index');
             Route::post('{id}/approve-or-reject', [ReturnController::class, 'approveOrReject'])->name('approveOrReject');
         });
 
+        // ====================== REPORTS ======================
         Route::prefix('reports')->name('reports.')->group(function () {
             Route::get('borrows', [ReportController::class, 'borrowReport'])->name('borrows');
             Route::get('returns', [ReportController::class, 'returnReport'])->name('returns');
         });
+
+        // ====================== PERMINTAAN (BARU) ======================
+        Route::prefix('permintaan')->name('permintaan.')->group(function () {
+            Route::get('/', [BarangController::class, 'permintaanIndex'])->name('index');
+        });
     });
 });
 
-// Route untuk User (non-admin)
+// ====================== USER ROUTES ======================
 Route::resource('kategori', KategoriBarangController::class);
 Route::resource('barang', BarangController::class);
 Route::get('barang/export/pdf', [BarangController::class, 'exportPdf'])->name('barang.export.pdf');
